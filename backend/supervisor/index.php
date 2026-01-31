@@ -1,0 +1,927 @@
+<?php
+// supervisor/index.php
+session_start();
+require_once "auth/check-login.php";  
+require_once "auth/check-role.php";  // supervisor-only
+require_once "../config/database.php";
+require_once "../includes/functions.php";
+
+$user_name = isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'Supervisor';
+
+function safe_count($conn, $sql) {
+    $res = $conn->query($sql);
+    return $res ? (int)$res->fetch_assoc()['count'] : 0;
+}
+
+// Dashboard stats
+$total_products = safe_count($conn, "SELECT COUNT(*) as count FROM products");
+$total_tests = safe_count($conn, "SELECT COUNT(*) as count FROM tests");
+$tests_today = safe_count($conn, "SELECT COUNT(*) as count FROM tests WHERE DATE(test_date) = CURDATE()");
+$pending_approvals = safe_count($conn, "SELECT COUNT(*) as count FROM tests WHERE test_status NOT IN ('Passed','Failed')");
+
+// Recent pending approvals (derived from test_status)
+$pending_query = "SELECT t.test_id, p.product_name, tt.test_type_name, t.test_status, u.full_name AS tester, t.created_at
+                  FROM tests t
+                  JOIN products p ON t.product_id = p.product_id
+                  JOIN test_types tt ON t.test_type_id = tt.test_type_id
+                  LEFT JOIN users u ON t.tester_id = u.user_id
+                  WHERE t.test_status NOT IN ('Passed','Failed')
+                  ORDER BY t.created_at DESC
+                  LIMIT 10";
+$pending_res = $conn->query($pending_query);
+$pending_tests = $pending_res ? $pending_res->fetch_all(MYSQLI_ASSOC) : [];
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supervisor Dashboard - Lab Automation System</title>
+       <!-- <link rel="stylesheet" href="../public/style.css"> -->
+<style>
+        /* ================= ROOT ================= */
+:root{
+    --navy:#0b1c2d;
+    --text:#1e293b;
+    --accent:#6dbcf6;
+    --glass:#ffffff;
+    --success:#d4edda;
+    --success-text:#155724;
+    --error:#f8d7da;
+    --error-text:#721c24;
+    --info:#d1ecf1;
+    --info-text:#0c5460;
+    --warning:#fff3cd;
+    --warning-text:#856404;
+    --purple:#f0e6ff;
+    --purple-text:#4b2c6f;
+}
+
+/* ================= RESET ================= */
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+body{
+    font-family:"Segoe UI",sans-serif;
+    background:#f4f6f9;
+    color:var(--text);
+    overflow-x:hidden;
+}
+
+/* ================= LAYOUT ================= */
+.dashboard-container{
+    display:flex;
+    width:100%;
+    min-height:100vh;
+}
+
+/* ================= SIDEBAR ================= */
+.sidebar{
+    width:260px;
+    background:var(--navy);
+    color:#fff;
+    padding:20px 0;
+    height:100vh;
+    position:sticky;
+    top:0;
+    flex-shrink:0;
+}
+.sidebar-header{
+    padding:0 20px 20px;
+    border-bottom:1px solid rgba(255,255,255,0.1);
+}
+.sidebar-header h2{font-size:18px;}
+.sidebar-header p{font-size:13px;color:#cbd5e1;}
+
+.sidebar-menu{list-style:none;padding:20px 0;}
+.sidebar-menu a{
+    display:block;
+    padding:12px 20px;
+    text-decoration:none;
+    color:#fff;
+    transition:.3s;
+}
+.sidebar-menu a { display:block; padding:12px 20px; color:#ecf0f1; border-left:3px solid transparent; border-radius:6px; transition:0.3s; }
+.sidebar-menu a:hover, .sidebar-menu a.active { background: rgba(255,255,255,0.05); border-left:3px solid var(--accent); }
+
+
+/* ================= MAIN ================= */
+.main-content{
+    flex:1;
+    padding:24px;
+    width:100%;
+    min-width:0; /* 🔑 stops overflow */
+}
+
+/* ================= TOP BAR ================= */
+.top-bar{
+    background:#fff;
+    border-radius:12px;
+    padding:16px 20px;
+    margin-bottom:20px;
+    display:flex;
+    flex-wrap:wrap;
+    width:100%;
+    box-shadow:0 2px 6px rgba(0,0,0,.08);
+}
+.top-bar h1{
+    width:100%;
+    font-size:22px;
+    margin-bottom:8px;
+}
+.user-info{
+    width:100%;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+}
+.logout-btn{
+    background:#e74c3c;
+    color:#fff;
+    padding:8px 14px;
+    border-radius:6px;
+    text-decoration:none;
+    font-size:.85rem;
+}
+
+/* ================= CONTENT ================= */
+.content-section{
+    background:#fff;
+    padding:20px;
+    border-radius:12px;
+    width:100%;
+}
+
+/* BUTTON ROW */
+.content-section > div{
+    display:flex;
+    gap:12px;
+    width:100%;
+    flex-wrap:wrap;
+}
+.content-section .btn{
+    background:var(--accent);
+    color:var(--navy);
+    padding:8px 14px;
+    border-radius:8px;
+    text-decoration:none;
+    font-size:.9rem;
+}
+
+/* ================= TABLE ================= */
+.table-responsive{
+    width:100%;
+    overflow-x:auto;
+    margin-top:16px;
+}
+
+table{
+    width:100%;
+    min-width:720px; /* tablet safety */
+    border-collapse:collapse;
+}
+th,td{
+    padding:12px;
+    text-align:left;
+    font-size:.9rem;
+}
+th{
+    background:#f1f5f9;
+    text-transform:uppercase;
+    font-size:.8rem;
+}
+tr:hover td{background:rgba(109,188,246,.08);}
+
+/* STATUS */
+.status-badge{
+    padding:6px 12px;
+    border-radius:14px;
+    font-size:.8rem;
+    font-weight:600;
+}
+.status-passed{background:var(--success);color:var(--success-text);}
+.status-failed{background:var(--error);color:var(--error-text);}
+.status-testing{background:var(--info);color:var(--info-text);}
+.status-cpri{background:var(--warning);color:var(--warning-text);}
+.status-re{background:var(--purple);color:var(--purple-text);}
+
+/* ACTION FORM */
+table form{
+    display:flex;
+    gap:6px;
+    flex-wrap:wrap;
+}
+table select,
+table button{
+    padding:6px;
+    border-radius:6px;
+    font-size:.85rem;
+}
+table button{
+    background:var(--navy);
+    color:#fff;
+    border:none;
+}
+
+/* ================= MOBILE ================= */
+@media(max-width:767px){
+    .dashboard-container{
+        flex-direction:column;
+    }
+
+    .sidebar{
+        width:100%;
+        height:auto;
+        position:relative;
+    }
+
+    .main-content{
+        padding:16px;
+    }
+
+    .user-info{
+        flex-direction:column;
+        gap:6px;
+    }
+
+    table{
+        min-width:620px;
+    }
+
+    table select,
+    table button{
+        width:100%;
+    }
+}
+
+/* ================= TABLET ================= */
+@media(min-width:768px) and (max-width:991px){
+    .sidebar{
+        width:200px;
+    }
+
+    table{
+        min-width:760px;
+    }
+
+    table form{
+        flex-direction:column;
+        align-items:flex-start;
+    }
+}
+
+/* ================= LARGE ================= */
+@media(min-width:1200px){
+    .main-content{padding:32px;}
+}
+/* ================= FILTERS FORM ================= */
+.filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.filters input[type="text"],
+.filters select {
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #ccc;
+    font-size: 0.9rem;
+    flex: 1 1 200px;
+    min-width: 120px;
+}
+
+.filters button {
+    background: var(--accent);
+    color: var(--navy);
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: 0.3s;
+}
+
+.filters button:hover {
+    background: #58a0e3;
+}
+
+/* ================= STATUS BADGES ================= */
+.badge {
+    display: inline-block;
+    padding: 6px 12px;
+    border-radius: 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: center;
+}
+
+.badge-pending {
+    background: var(--info);
+    color: var(--info-text);
+}
+.badge-approved {
+    background: var(--success);
+    color: var(--success-text);
+}
+.badge-rejected {
+    background: var(--error);
+    color: var(--error-text);
+}
+
+/* ================= TABLE ADJUSTMENTS ================= */
+table th, table td {
+    vertical-align: middle;
+}
+
+.table-responsive table tr td span.badge {
+    white-space: nowrap;
+}
+
+/* ================= RESPONSIVE ================= */
+@media(max-width:767px){
+    .filters {
+        flex-direction: column;
+        gap: 8px;
+    }
+    .filters input[type="text"],
+    .filters select,
+    .filters button {
+        flex: 1 1 100%;
+    }
+}
+
+.logout-btn {
+    background: #e74c3c;
+    color: white;
+    padding: 8px 14px;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: all 0.3s ease;
+}
+.logout-btn:hover {
+    background: #c0392b;
+    transform: translateY(-2px);
+}
+
+     /* ===== FILTER INPUTS RESPONSIVE ===== */
+@media (max-width: 767px) {
+    .filters {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .filters input[type="text"],
+    .filters select,
+    .filters button {
+        font-size: 0.75rem; /* smaller text */
+        padding: 6px 8px;   /* slightly smaller padding */
+    }
+
+    .filters button {
+        width: 100px; /* button full width on mobile */
+    }
+}
+/* ================= SIDEBAR SCROLL FIX ================= */
+
+/* Sidebar layout */
+.sidebar{
+    width:260px;
+    background:var(--navy);
+    color:#fff;
+    height:100vh;
+    /* position:sticky; */
+    top:0;
+    flex-shrink:0;
+
+    display:flex;
+    flex-direction:column;
+}
+
+/* Header stays fixed */
+.sidebar-header{
+    padding:0 20px 20px;
+    border-bottom:1px solid rgba(255,255,255,0.1);
+    flex-shrink:0;
+}
+
+/* MENU SCROLL AREA */
+.sidebar-menu{
+    list-style:none;
+    padding:20px 0;
+
+    flex:1;
+    overflow-y:auto;
+    overflow-x:hidden;
+
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: var(--accent) rgba(255,255,255,0.1);
+}
+
+/* ===== Cute scrollbar (Chrome / Edge / Safari) ===== */
+.sidebar-menu::-webkit-scrollbar{
+    width:6px;
+}
+
+.sidebar-menu::-webkit-scrollbar-track{
+    background: rgba(255,255,255,0.05);
+    border-radius:10px;
+}
+
+.sidebar-menu::-webkit-scrollbar-thumb{
+    background: var(--accent);
+    border-radius:10px;
+}
+
+.sidebar-menu::-webkit-scrollbar-thumb:hover{
+    background:#58a0e3;
+}
+
+/* Menu links */
+.sidebar-menu a{
+    display:block;
+    padding:12px 20px;
+    text-decoration:none;
+    color:#ecf0f1;
+    border-left:3px solid transparent;
+    border-radius:6px;
+    transition:0.3s;
+}
+
+.sidebar-menu a:hover,
+.sidebar-menu a.active{
+    background: rgba(255,255,255,0.05);
+    border-left:3px solid var(--accent);
+}
+
+
+
+/* ================= ADVANCED SEARCH ================= */
+
+/* Search form */
+.search-form{
+    display:flex;
+    gap:12px;
+    flex-wrap:wrap;
+    align-items:center;
+}
+
+/* Search input */
+.search-form input[type="text"]{
+    flex:1 1 260px;
+    padding:10px 14px;
+    font-size:0.9rem;
+    border-radius:10px;
+    border:1px solid #d1d5db;
+}
+
+/* Select */
+.search-form select{
+    flex:0 0 160px;
+    padding:10px 12px;
+    font-size:0.9rem;
+    border-radius:10px;
+    border:1px solid #d1d5db;
+    background:#fff;
+}
+
+/* Button */
+.search-form button{
+    background:var(--accent);
+    color:var(--navy);
+    border:none;
+    padding:10px 22px;
+    font-size:0.9rem;
+    font-weight:600;
+    border-radius:10px;
+    cursor:pointer;
+    transition:0.3s;
+}
+
+.search-form button:hover{
+    transform:translateY(-2px);
+    box-shadow:0 6px 14px rgba(109,188,246,.35);
+}
+
+/* ================= TABLES ================= */
+
+.content-section h2{
+    font-size:1.05rem;
+    font-weight:600;
+    color:var(--text);
+}
+
+/* Table wrapper */
+.content-section table{
+    width:100%;
+    border-collapse:collapse;
+    min-width:720px;
+}
+
+.content-section th,
+.content-section td{
+    padding:12px 14px;
+    font-size:0.85rem;
+    text-align:left;
+    vertical-align:middle;
+}
+
+.content-section th{
+    background:#f1f5f9;
+    font-size:0.75rem;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+}
+
+.content-section tr:hover td{
+    background:rgba(109,188,246,.08);
+}
+
+/* Responsive scroll */
+.content-section{
+    overflow-x:auto;
+}
+
+/* ================= BADGES ================= */
+
+.badge{
+    display:inline-block;
+    padding:6px 12px;
+    font-size:0.75rem;
+    font-weight:600;
+    border-radius:14px;
+    white-space:nowrap;
+}
+
+.badge-success{
+    background:var(--success);
+    color:var(--success-text);
+}
+
+.badge-danger{
+    background:var(--error);
+    color:var(--error-text);
+}
+
+.badge-info{
+    background:var(--info);
+    color:var(--info-text);
+}
+
+.badge-pending{
+    background:#e2e8f0;
+    color:#475569;
+}
+
+/* ================= BUTTONS ================= */
+
+.btn{
+    display:inline-block;
+    text-decoration:none;
+    border-radius:8px;
+    font-size:0.8rem;
+    padding:6px 14px;
+    font-weight:600;
+}
+
+.btn-sm{
+    padding:6px 12px;
+    font-size:0.75rem;
+}
+
+.btn-view{
+    background:var(--navy);
+    color:#fff;
+    transition:0.3s;
+}
+
+.btn-view:hover{
+    background:#122c46;
+}
+
+/* ================= NO RESULT ================= */
+
+.content-section p{
+    font-size:0.9rem;
+}
+
+/* ================= RESPONSIVE ================= */
+
+/* Tablet */
+@media(max-width:991px){
+    .search-form{
+        gap:10px;
+    }
+
+    .search-form input,
+    .search-form select{
+        flex:1 1 100%;
+    }
+
+    .search-form button{
+        width:100%;
+    }
+}
+
+/* Mobile */
+@media(max-width:576px){
+    .top-bar h1{
+        font-size:1.1rem;
+    }
+
+    .search-form input,
+    .search-form select{
+        font-size:0.8rem;
+        padding:8px 10px;
+    }
+
+    .search-form button{
+        font-size:0.85rem;
+        padding:10px;
+    }
+
+    .content-section th,
+    .content-section td{
+        font-size:0.75rem;
+        padding:10px;
+    }
+
+    .badge{
+        font-size:0.7rem;
+        padding:5px 10px;
+    }
+}
+.filters {
+    display: flex;
+    flex-wrap: wrap;      /* wrap on small screens */
+    gap: 10px;            /* spacing between fields */
+    align-items: flex-start; /* align labels + inputs nicely */
+}.filter-group {
+    display: flex;
+    flex-direction: column; /* label above input/select */
+    flex-grow: 0;           /* prevent stretching */
+    flex-shrink: 0;         /* prevent shrinking too much */
+    flex-basis: auto;       /* auto width based on content or container */
+    max-width: 230px;            /* natural width */
+    min-width: 0;           /* prevent overflow */
+    margin: 0;
+        height: 60px;          /* let it size naturally */
+
+}
+
+.filter-group label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 2px; /* smaller gap to input */
+}
+
+.filter-group input,
+.filter-group select {
+    max-width: 200px;           /* fill parent width */
+    padding: 6px 10px;
+    font-size: 0.85rem;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    box-sizing: border-box;
+}
+
+
+.filter-group button {
+    padding: 7px 12px;
+    font-size: 0.85rem;
+    border-radius: 6px;
+    cursor: pointer;
+    width: 100%;
+    max-width: 150px; /* optional desktop cap */
+    margin-top :20px!important;
+}
+
+/* ================= MOBILE ================= */
+@media(max-width: 576px){
+    .filters {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .filter-group {
+        width: 200px; 
+        flex: 1 1 100%;
+        min-width: unset;
+    }
+
+    .filter-group button {
+        width: 120px;
+    }
+}
+/* ================= STATS GRID ================= */
+.stats-grid{
+    display:grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap:18px;
+    margin-bottom:24px;
+}
+
+/* ================= STAT CARD ================= */
+.stat-card{
+    background: linear-gradient(135deg, #ffffff, #f8fafc);
+    border-radius:16px;
+    padding:20px;
+    box-shadow:0 10px 22px rgba(11,28,45,0.08);
+    position:relative;
+    overflow:hidden;
+    transition:all 0.35s ease;
+    border-left:5px solid var(--accent);
+}
+
+/* Hover effect */
+.stat-card:hover{
+    transform:translateY(-6px);
+    box-shadow:0 18px 35px rgba(11,28,45,0.15);
+}
+
+/* Card title */
+.stat-card h3{
+    font-size:0.85rem;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:#64748b;
+    margin-bottom:6px;
+}
+
+/* Big number */
+.stat-value{
+    font-size:2.1rem;
+    font-weight:700;
+    color:var(--navy);
+}
+
+/* Decorative icon bubble */
+.stat-card::after{
+    content:"";
+    position:absolute;
+    top:-25px;
+    right:-25px;
+    width:90px;
+    height:90px;
+    background:rgba(109,188,246,0.15);
+    border-radius:50%;
+}
+
+/* ================= VARIANTS ================= */
+
+/* INFO */
+.stat-card.info{
+    border-left-color:var(--info-text);
+}
+.stat-card.info::after{
+    background:rgba(209,236,241,0.7);
+}
+
+/* WARNING */
+.stat-card.warning{
+    border-left-color:var(--warning-text);
+}
+.stat-card.warning::after{
+    background:rgba(255,243,205,0.8);
+}
+
+/* DANGER */
+.stat-card.danger{
+    border-left-color:var(--error-text);
+}
+.stat-card.danger::after{
+    background:rgba(248,215,218,0.8);
+}
+
+/* ================= RESPONSIVE ================= */
+
+/* Tablet */
+@media(max-width:991px){
+    .stat-value{
+        font-size:1.9rem;
+    }
+}
+
+/* Mobile */
+@media(max-width:576px){
+    .stats-grid{
+        gap:14px;
+    }
+
+    .stat-card{
+        padding:16px;
+        border-radius:14px;
+    }
+
+    .stat-value{
+        font-size:1.7rem;
+    }
+
+    .stat-card h3{
+        font-size:0.75rem;
+    }
+}
+
+</style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>Supervisor Panel</h2>
+                <p><?php echo htmlspecialchars($user_name); ?></p>
+            </div>
+            <ul class="sidebar-menu">
+                <li><a href="index.php" class="active">Dashboard</a></li>
+                <li><a href="modules/products/list.php">Products</a></li>
+                <li><a href="modules/products/tests.php">Tests</a></li>
+                <li><a href="modules/products/test_approval.php">Test Approval</a></li>
+                <li><a href="modules/reports/index.php">Reports</a></li>
+                <li><a href="modules/cpri/list.php">CPRI Submissions</a></li>
+                <li><a href="modules/remanufacturing/list.php">Re-Manufacturing</a></li>
+                <li><a href="../logout.php">Logout</a></li>
+            </ul>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <div class="top-bar">
+                <h1>Supervisor Dashboard</h1>
+                <div class="user-info">
+                    <span>Welcome, <?php echo htmlspecialchars($user_name); ?></span>
+                    <a href="../logout.php" class="logout-btn">Logout</a>
+                </div>
+            </div>
+
+            <!-- Statistics Cards -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>Total Products</h3>
+                    <div class="stat-value"><?php echo $total_products; ?></div>
+                </div>
+                <div class="stat-card info">
+                    <h3>Total Tests</h3>
+                    <div class="stat-value"><?php echo $total_tests; ?></div>
+                </div>
+                <div class="stat-card warning">
+                    <h3>Tests Today</h3>
+                    <div class="stat-value"><?php echo $tests_today; ?></div>
+                </div>
+                <div class="stat-card danger">
+                    <h3>Pending Approvals</h3>
+                    <div class="stat-value"><?php echo $pending_approvals; ?></div>
+                </div>
+            </div>
+
+            <!-- Pending Approvals Section -->
+            <div class="content-section">
+                <div class="section-header">
+                    <h2>Pending Test Approvals</h2>
+                    <a href="modules/products/test_approval.php" class="btn btn-primary">View All</a>
+                </div>
+                <div class="table-responsive">
+                    <?php if (count($pending_tests) === 0): ?>
+                        <div class="empty-state">No pending approvals</div>
+                    <?php else: ?>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Test ID</th>
+                                    <th>Product</th>
+                                    <th>Test Type</th>
+                                    <th>Tester</th>
+                                    <th>Status</th>
+                                    <th>Requested At</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($pending_tests as $t): ?>
+                                    <tr>
+                                        <td><?php echo htmlspecialchars($t['test_id']); ?></td>
+                                        <td><?php echo htmlspecialchars($t['product_name']); ?></td>
+                                        <td><?php echo htmlspecialchars($t['test_type_name']); ?></td>
+                                        <td><?php echo htmlspecialchars($t['tester']); ?></td>
+                                        <td><span class="badge badge-pending"><?php echo htmlspecialchars($t['test_status']); ?></span></td>
+                                        <td><?php echo htmlspecialchars($t['created_at']); ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+
+
+        </main>
+    </div>
+</body>
+</html>
